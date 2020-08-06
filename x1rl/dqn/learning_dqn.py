@@ -3,9 +3,9 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 
-from atari_wrappers import make_atari, wrap_deepmind
+from x1rl.common.atari_wrappers import make_atari, wrap_deepmind
 from model import create_q_model
-import logger
+import x1rl.logger
 
 def learn():
     # Configuration paramaters for the whole setup
