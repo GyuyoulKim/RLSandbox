@@ -4,8 +4,8 @@ from tensorflow import keras
 from tensorflow.keras import layers
 
 from x1rl.common.atari_wrappers import make_atari, wrap_deepmind
+from x1rl import logger
 from model import create_q_model
-import x1rl.logger
 
 def learn():
     # Configuration paramaters for the whole setup
@@ -90,8 +90,6 @@ def learn():
             # Predict action Q-values
             # From environment state
             state_tensor = tf.convert_to_tensor(state)
-            print(state.shape)
-            print(state_tensor.shape)
             state_tensor = tf.expand_dims(state_tensor, 0)
             action_probs = model(state_tensor, training=False)
             # Take best action
