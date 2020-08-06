@@ -5,7 +5,7 @@ from tensorflow.keras import layers
 
 from x1rl.common.atari_wrappers import make_atari, wrap_deepmind
 from x1rl import logger
-from model import create_q_model
+from model import create_q_model, create_duel_q_model
 
 def learn():
     # Configuration paramaters for the whole setup
@@ -34,16 +34,17 @@ def learn():
     is chosen by selecting the larger of the four Q-values predicted in the output layer.
     """
 
+    input_shape = env.observation_space.shape
     num_actions = env.action_space.n
 
 
     # The first model makes the predictions for Q-values which are used to
     # make a action.
-    model = create_q_model(num_actions)
+    model = create_q_model(input_shape, num_actions)
     # Build a target model for the prediction of future rewards.
     # The weights of a target model get updated every 10000 steps thus when the
     # loss between the Q-values is calculated the target Q-value is stable.
-    model_target = create_q_model(num_actions)
+    model_target = create_q_model(input_shape, num_actions)
 
 
     """
