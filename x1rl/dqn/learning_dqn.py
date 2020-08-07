@@ -5,9 +5,9 @@ from tensorflow.keras import layers
 
 from x1rl.common.atari_wrappers import make_atari, wrap_deepmind
 from x1rl import logger
-from model import create_q_model, create_duel_q_model
+from .model import create_q_model, create_duel_q_model
 
-def learn():
+def learn(env_id):
     # Configuration paramaters for the whole setup
     seed = 42
     gamma = 0.99  # Discount factor for past rewards
@@ -21,7 +21,7 @@ def learn():
     total_timesteps = 10000000
 
     # Use the Baseline Atari environment because of Deepmind helper functions
-    env = make_atari("MsPacmanNoFrameskip-v4")
+    env = make_atari(env_id)
     # Warp the frames, grey scale, stake four frame and scale to smaller ratio
     env = wrap_deepmind(env, frame_stack=True, scale=True)
     env.seed(seed)
