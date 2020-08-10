@@ -7,9 +7,14 @@ from x1rl.common.atari_wrappers import make_atari, wrap_deepmind
 from x1rl import logger
 from .model import create_q_model, create_duel_q_model
 
-def learn(env_id):
+import os
+import time
+import shutil
+
+seed = 42
+
+def learn(env_id, num_steps, render):
     # Configuration paramaters for the whole setup
-    seed = 42
     gamma = 0.99  # Discount factor for past rewards
     epsilon = 1.0  # Epsilon greedy parameter
     epsilon_min = 0.1  # Minimum epsilon greedy parameter
@@ -18,7 +23,7 @@ def learn(env_id):
         epsilon_max - epsilon_min
     )  # Rate at which to reduce chance of random action being taken
     batch_size = 32  # Size of batch taken from replay buffer
-    total_timesteps = 10000000
+    total_timesteps = num_steps
 
     # Use the Baseline Atari environment because of Deepmind helper functions
     env = make_atari(env_id)
@@ -40,12 +45,11 @@ def learn(env_id):
 
     # The first model makes the predictions for Q-values which are used to
     # make a action.
-    model = create_q_model(input_shape, num_actions)
+    model = create_q_model(input_shape, num_actions)    
     # Build a target model for the prediction of future rewards.
     # The weights of a target model get updated every 10000 steps thus when the
     # loss between the Q-values is calculated the target Q-value is stable.
     model_target = create_q_model(input_shape, num_actions)
-
 
     """
     ## Train
@@ -79,9 +83,8 @@ def learn(env_id):
     state = np.array(env.reset())
 
     for t in range(total_timesteps):
-        # env.render(); Adding this line would show the attempts
-        # of the agent in a pop up window.
-        env.render('human')
+        if render is True:
+            env.render('human')
 
         # Use epsilon-greedy for exploration
         if t < epsilon_random_frames or epsilon > np.random.rand(1)[0]:
@@ -180,6 +183,47 @@ def learn(env_id):
             del state_next_history[:1]
             del action_history[:1]
             del done_history[:1]
+
+    env.close()
+
+    path_to = './data'
+    os.makedirs(path_to, exist_ok=True)
+    path_to_file = path_to + '/' + env_id + '-' + time.strftime('%Y-%m-%d', time.localtime(time.time())) + '-dqn.h5'
+    model.save(filepath=path_to_file)
+
+    return
+
+def play(env_id, model_file, episodes):
+    # Use the Baseline Atari environment because of Deepmind helper functions
+    env = make_atari(env_id)
+    # Warp the frames, grey scale, stake four frame and scale to smaller ratio
+    env = wrap_deepmind(env, frame_stack=True, scale=True)
+    env.seed(seed)
+
+    path_to = './data'
+    path_to_file = path_to + '/' + model_file
+
+    model = keras.models.load_model(path_to_file)
+
+    for _ in range(episodes):
+        is_done = False
+        state = np.array(env.reset())
+        
+        while not is_done:
+            env.render('human')
+
+            # Predict action Q-values
+            # From environment state
+            state_tensor = tf.convert_to_tensor(state)
+            state_tensor = tf.expand_dims(state_tensor, 0)
+            action_probs = model(state_tensor, training=False)
+            # Take best action
+            action = tf.argmax(action_probs[0]).numpy()
+            
+            state, _, is_done, _  = env.step(action)
+
+    env.close()
+    return
 
 if __name__ == '__main__':
     learn()
