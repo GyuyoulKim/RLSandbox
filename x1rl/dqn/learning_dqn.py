@@ -13,7 +13,19 @@ import shutil
 
 seed = 42
 
-def learn(env_id, num_steps, render):
+def arg_parser():
+    import argparse
+    return argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+def deepq_arg_parser():
+    parser = arg_parser()
+    parser.add_argument('--duel', help='use duel network', default=False, action='store_true')
+    return parser
+
+def learn(env_id, num_steps, render, args):
+    arg_parser = deepq_arg_parser()
+    args, _ = arg_parser.parse_known_args(args)
+
     # Configuration paramaters for the whole setup
     gamma = 0.99  # Discount factor for past rewards
     epsilon = 1.0  # Epsilon greedy parameter
@@ -42,14 +54,12 @@ def learn(env_id, num_steps, render):
     input_shape = env.observation_space.shape
     num_actions = env.action_space.n
 
-
-    # The first model makes the predictions for Q-values which are used to
-    # make a action.
-    model = create_q_model(input_shape, num_actions)    
-    # Build a target model for the prediction of future rewards.
-    # The weights of a target model get updated every 10000 steps thus when the
-    # loss between the Q-values is calculated the target Q-value is stable.
-    model_target = create_q_model(input_shape, num_actions)
+    if args.duel is True:
+        model = create_duel_q_model(input_shape, num_actions)
+        model_target = create_duel_q_model(input_shape, num_actions)
+    else:
+        model = create_q_model(input_shape, num_actions)
+        model_target = create_q_model(input_shape, num_actions)
 
     """
     ## Train
@@ -69,7 +79,7 @@ def learn(env_id, num_steps, render):
     # Number of frames to take random action and observe output
     epsilon_random_frames = 50000
     # Number of frames for exploration
-    epsilon_greedy_frames = 1000000.0
+    epsilon_greedy_frames = total_timesteps * 0.1
     # Maximum replay length
     # Note: The Deepmind paper suggests 1000000 however this causes memory issues
     max_memory_length = 100000
