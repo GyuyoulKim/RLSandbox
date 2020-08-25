@@ -19,7 +19,8 @@ def arg_parser():
 
 def deepq_arg_parser():
     parser = arg_parser()
-    parser.add_argument('--duel', help='use duel network', default=False, action='store_true')
+    parser.add_argument('--duel', help='use duel network',                      default=False, action='store_true')
+    parser.add_argument('--mode', help='choose to use cpu or gpu',  type=str,   default='gpu')
     return parser
 
 def learn(env_id, num_steps, render, args):
@@ -43,13 +44,8 @@ def learn(env_id, num_steps, render, args):
     env = wrap_deepmind(env, frame_stack=True, scale=True)
     env.seed(seed)
 
-    """
-    ## Implement the Deep Q-Network
-    This network learns an approximation of the Q-table, which is a mapping between
-    the states and actions that an agent will take. For every state we'll have four
-    actions, that can be taken. The environment provides the state, and the action
-    is chosen by selecting the larger of the four Q-values predicted in the output layer.
-    """
+    if args.mode == 'cpu':
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
     input_shape = env.observation_space.shape
     num_actions = env.action_space.n
@@ -91,6 +87,8 @@ def learn(env_id, num_steps, render, args):
     loss_function = keras.losses.Huber()
 
     state = np.array(env.reset())
+
+    start_time = time.time()
 
     for t in range(total_timesteps):
         if render is True:
@@ -196,9 +194,13 @@ def learn(env_id, num_steps, render, args):
 
     env.close()
 
+    end_time = time.time()
+    logger.record_tabular("running time", end_time - start_time)
+    logger.dump_tabular()
+
     path_to = './data'
     os.makedirs(path_to, exist_ok=True)
-    path_to_file = path_to + '/' + env_id + '-' + time.strftime('%Y-%m-%d', time.localtime(time.time())) + '-dqn.h5'
+    path_to_file = path_to + '/' + env_id + '-' + time.strftime('%Y-%m-%d', time.localtime(time.time())) + '-dqn' + '-' + args.mode + '.h5'
     model.save(filepath=path_to_file)
 
     return
@@ -213,7 +215,11 @@ def play(env_id, model_file, episodes):
     path_to = './data'
     path_to_file = path_to + '/' + model_file
 
-    model = keras.models.load_model(path_to_file)
+    if os.path.isfile(path_to_file):
+        model = keras.models.load_model(path_to_file)
+    else:
+        logger.error('filename:{} doesn\'t exist'.format(path_to_file))
+        return
 
     for _ in range(episodes):
         is_done = False
