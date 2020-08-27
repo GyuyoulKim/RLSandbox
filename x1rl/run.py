@@ -28,7 +28,7 @@ def main(args):
     arg_parser = common_arg_parser()
     args, unknown_args = arg_parser.parse_known_args(args)
 
-    from x1rl.dqn.learning_dqn import learn, play
+    from x1rl.dqn.dqn_learner import learn, play
 
     if args.play is True:
         assert args.play_model is not None
@@ -37,6 +37,8 @@ def main(args):
         logger.dump_tabular()
         play(atari_game, args.play_model, args.num_episodes)
     else:
+        assert args.env is not None
+        assert args.play_model is None
         learn(args.env, args.num_steps, args.render, unknown_args)
 
     return

@@ -6,12 +6,11 @@ from tensorflow.keras import layers
 from x1rl.common.atari_wrappers import make_atari, wrap_deepmind
 from x1rl import logger
 from .model import create_q_model, create_duel_q_model
+from .replay_memory import ReplayMemory
 
 import os
 import time
 import shutil
-
-seed = 42
 
 def arg_parser():
     import argparse
@@ -23,10 +22,40 @@ def deepq_arg_parser():
     parser.add_argument('--mode', help='choose to use cpu or gpu',  type=str,   default='gpu')
     return parser
 
+def make_env(env_id, seed):
+    env = make_atari(env_id)
+    env = wrap_deepmind(env, frame_stack=True, scale=True)
+    env.seed(seed)
+    return env
+
 def learn(env_id, num_steps, render, args):
     arg_parser = deepq_arg_parser()
     args, _ = arg_parser.parse_known_args(args)
 
+    # Use the Baseline Atari environment because of Deepmind helper functions
+    env = make_env(env_id, 42)
+
+    input_shape = env.observation_space.shape
+    num_actions = env.action_space.n
+
+    if args.mode == 'cpu':
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+        
+    if args.duel is True:
+        model = create_duel_q_model(input_shape, num_actions)
+        model_target = create_duel_q_model(input_shape, num_actions)
+    else:
+        model = create_q_model(input_shape, num_actions)
+        model_target = create_q_model(input_shape, num_actions)
+
+    # In the Deepmind paper they use RMSProp however then Adam optimizer
+    # improves training time
+    optimizer = keras.optimizers.Adam(learning_rate=0.00025, clipnorm=1.0)
+    loss_function = keras.losses.Huber()
+
+    """
+    ## Train
+    """
     # Configuration paramaters for the whole setup
     gamma = 0.99  # Discount factor for past rewards
     epsilon = 1.0  # Epsilon greedy parameter
@@ -36,46 +65,10 @@ def learn(env_id, num_steps, render, args):
         epsilon_max - epsilon_min
     )  # Rate at which to reduce chance of random action being taken
     batch_size = 32  # Size of batch taken from replay buffer
-    total_timesteps = num_steps
-
-    # Use the Baseline Atari environment because of Deepmind helper functions
-    env = make_atari(env_id)
-    # Warp the frames, grey scale, stake four frame and scale to smaller ratio
-    env = wrap_deepmind(env, frame_stack=True, scale=True)
-    env.seed(seed)
-
-    if args.mode == 'cpu':
-        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-
-    input_shape = env.observation_space.shape
-    num_actions = env.action_space.n
-
-    if args.duel is True:
-        model = create_duel_q_model(input_shape, num_actions)
-        model_target = create_duel_q_model(input_shape, num_actions)
-    else:
-        model = create_q_model(input_shape, num_actions)
-        model_target = create_q_model(input_shape, num_actions)
-
-    """
-    ## Train
-    """
-    # In the Deepmind paper they use RMSProp however then Adam optimizer
-    # improves training time
-    optimizer = keras.optimizers.Adam(learning_rate=0.00025, clipnorm=1.0)
-
-    # Experience replay buffers
-    action_history = []
-    state_history = []
-    state_next_history = []
-    rewards_history = []
-    done_history = []
-    episode_rewards = [0.0]
-    episode_count = 0
     # Number of frames to take random action and observe output
     epsilon_random_frames = 50000
     # Number of frames for exploration
-    epsilon_greedy_frames = total_timesteps * 0.1
+    epsilon_greedy_frames = num_steps * 0.1
     # Maximum replay length
     # Note: The Deepmind paper suggests 1000000 however this causes memory issues
     max_memory_length = 100000
@@ -83,14 +76,16 @@ def learn(env_id, num_steps, render, args):
     update_after_actions = 4
     # How often to update the target network
     update_target_network = 10000
-    # Using huber loss for stability
-    loss_function = keras.losses.Huber()
 
+    # Experience replay buffers
+    replay_memory = ReplayMemory(max_memory_length)
+    episode_rewards = [0.0]
+    episode_count = 0
     state = np.array(env.reset())
 
     start_time = time.time()
 
-    for t in range(total_timesteps):
+    for t in range(num_steps):
         if render is True:
             env.render('human')
 
@@ -116,11 +111,7 @@ def learn(env_id, num_steps, render, args):
         state_next = np.array(state_next)
 
         # Save actions and states in replay buffer
-        action_history.append(action)
-        state_history.append(state)
-        state_next_history.append(state_next)
-        rewards_history.append(reward)
-        done_history.append(done)
+        replay_memory.append(state, action, reward, state_next, done)
         state = state_next
 
         episode_rewards[-1] += reward
@@ -131,19 +122,9 @@ def learn(env_id, num_steps, render, args):
             episode_count += 1
 
         # Update every fourth frame and once batch size is over 32
-        if t % update_after_actions == 0 and len(done_history) > batch_size:
+        if t % update_after_actions == 0 and t > batch_size:
 
-            # Get indices of samples for replay buffers
-            indices = np.random.choice(range(len(done_history)), size=batch_size)
-
-            # Using list comprehension to sample from replay buffer
-            state_sample = np.array([state_history[i] for i in indices])
-            state_next_sample = np.array([state_next_history[i] for i in indices])
-            rewards_sample = [rewards_history[i] for i in indices]
-            action_sample = [action_history[i] for i in indices]
-            done_sample = tf.convert_to_tensor(
-                [float(done_history[i]) for i in indices]
-            )
+            state_sample, action_sample, rewards_sample, state_next_sample, done_sample = replay_memory.sample(batch_size)
 
             # Build the updated Q-values for the sampled future states
             # Use the target model for stability
@@ -184,14 +165,6 @@ def learn(env_id, num_steps, render, args):
             logger.record_tabular("mean 100 episodes reward", mean_100ep_reward)
             logger.dump_tabular()
 
-        # Limit the state and reward history
-        if len(rewards_history) > max_memory_length:
-            del rewards_history[:1]
-            del state_history[:1]
-            del state_next_history[:1]
-            del action_history[:1]
-            del done_history[:1]
-
     env.close()
 
     end_time = time.time()
@@ -206,11 +179,9 @@ def learn(env_id, num_steps, render, args):
     return
 
 def play(env_id, model_file, episodes):
+    import math
     # Use the Baseline Atari environment because of Deepmind helper functions
-    env = make_atari(env_id)
-    # Warp the frames, grey scale, stake four frame and scale to smaller ratio
-    env = wrap_deepmind(env, frame_stack=True, scale=True)
-    env.seed(seed)
+    env = make_env(env_id, math.trunc(time.time()))
 
     path_to = './data'
     path_to_file = path_to + '/' + model_file
