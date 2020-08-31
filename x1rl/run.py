@@ -28,7 +28,7 @@ def main(args):
     arg_parser = common_arg_parser()
     args, unknown_args = arg_parser.parse_known_args(args)
 
-    from x1rl.dqn.dqn_learner import learn, play
+    from x1rl.dqn.deepq import learn, play
 
     if args.play is True:
         assert args.play_model is not None

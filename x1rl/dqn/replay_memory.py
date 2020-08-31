@@ -1,54 +1,48 @@
-from collections import deque
+import random
 import numpy as np
 import tensorflow as tf
-
-class RingBuffer(object):
-    def __init__(self, size):
-        self.size = size
-        self.data = deque(maxlen=size)
-
-    def __len__(self):
-        return self.length()
-
-    def __getitem__(self, idx):
-        if idx < 0 or idx >= self.length():
-            raise KeyError()
-        return self.data[idx]
-
-    def append(self, v):
-        self.data.append(v)
-
-    def length(self):
-        return len(self.data)
 
 class ReplayMemory(object):
     def __init__(self, size):
         self.size = size
         
-        self.states = RingBuffer(size)
-        self.actions = RingBuffer(size)
-        self.rewards = RingBuffer(size)
-        self.next_states = RingBuffer(size)
-        self.dones = RingBuffer(size)
+        self._storage = []
+        self._maxsize = size
+        self._next_idx = 0
+
+    def __len__(self):
+        return len(self._storage)
 
     def append(self, state, action, reward, next_state, done):
-        self.states.append(state)
-        self.actions.append(action)
-        self.rewards.append(reward)
-        self.next_states.append(next_state)
-        self.dones.append(done)
+        data = (state, action, reward, next_state, done)
 
-    def sample(self, sample_size):
-        # Get indices of samples for replay buffers
-        indices = np.random.choice(range(len(self.dones)), size=sample_size)
+        if self._next_idx >= len(self._storage):
+            self._storage.append(data)
+        else:
+            self._storage[self._next_idx] = data
+        
+        self._next_idx = (self._next_idx + 1) % self._maxsize
 
-        # Using list comprehension to sample from replay buffer
-        state_sample = np.array([self.states[i] for i in indices])
-        action_sample = [self.actions[i] for i in indices]
-        reward_sample = [self.rewards[i] for i in indices]
-        next_state_sample = np.array([self.next_states[i] for i in indices])
-        done_sample = tf.convert_to_tensor(
-            [float(self.dones[i]) for i in indices]
-        )
-
-        return state_sample, action_sample, reward_sample, next_state_sample, done_sample
+    def _encode_sample(self, idxes):
+        obses_t, actions, rewards, obses_tp1, dones = [], [], [], [], []
+        data = self._storage[0]
+        ob_dtype = data[0].dtype
+        ac_dtype = data[1].dtype
+        for i in idxes:
+            data = self._storage[i]
+            obs_t, action, reward, obs_tp1, done = data
+            obses_t.append(np.array(obs_t, copy=False))
+            actions.append(np.array(action, copy=False))
+            rewards.append(reward)
+            obses_tp1.append(np.array(obs_tp1, copy=False))
+            dones.append(done)
+        
+        return np.array(obses_t, dtype=ob_dtype),   \
+            np.array(actions, dtype=ac_dtype),      \
+            np.array(rewards, dtype=np.float32),    \
+            np.array(obses_tp1, dtype=ob_dtype),    \
+            np.array(dones, dtype=np.float32)        
+    
+    def sample(self, batch_size):
+        idxes = [random.randint(0, len(self._storage) - 1) for _ in range(batch_size)]
+        return self._encode_sample(idxes)

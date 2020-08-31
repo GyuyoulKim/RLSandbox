@@ -1,4 +1,5 @@
 import numpy as np
+import gym
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
@@ -6,6 +7,7 @@ from tensorflow.keras import layers
 from x1rl.common.atari_wrappers import make_atari, wrap_deepmind
 from x1rl import logger
 from .model import create_q_model, create_duel_q_model
+from .agent import DEEQAgent
 from .replay_memory import ReplayMemory
 
 import os
@@ -22,8 +24,11 @@ def deepq_arg_parser():
     parser.add_argument('--mode', help='choose to use cpu or gpu',  type=str,   default='gpu')
     return parser
 
-def make_env(env_id, seed):
-    env = make_atari(env_id)
+def make_env(env_id, seed, is_play=False):
+    if is_play is False:
+        env = make_atari(env_id)
+    else:
+        env = gym.make(env_id)
     env = wrap_deepmind(env, frame_stack=True, scale=True)
     env.seed(seed)
     return env
@@ -32,31 +37,7 @@ def learn(env_id, num_steps, render, args):
     arg_parser = deepq_arg_parser()
     args, _ = arg_parser.parse_known_args(args)
 
-    # Use the Baseline Atari environment because of Deepmind helper functions
-    env = make_env(env_id, 42)
-
-    input_shape = env.observation_space.shape
-    num_actions = env.action_space.n
-
-    if args.mode == 'cpu':
-        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-        
-    if args.duel is True:
-        model = create_duel_q_model(input_shape, num_actions)
-        model_target = create_duel_q_model(input_shape, num_actions)
-    else:
-        model = create_q_model(input_shape, num_actions)
-        model_target = create_q_model(input_shape, num_actions)
-
-    # In the Deepmind paper they use RMSProp however then Adam optimizer
-    # improves training time
-    optimizer = keras.optimizers.Adam(learning_rate=0.00025, clipnorm=1.0)
-    loss_function = keras.losses.Huber()
-
-    """
-    ## Train
-    """
-    # Configuration paramaters for the whole setup
+        # Configuration paramaters for the whole setup
     gamma = 0.99  # Discount factor for past rewards
     epsilon = 1.0  # Epsilon greedy parameter
     epsilon_min = 0.1  # Minimum epsilon greedy parameter
@@ -73,15 +54,34 @@ def learn(env_id, num_steps, render, args):
     # Note: The Deepmind paper suggests 1000000 however this causes memory issues
     max_memory_length = 100000
     # Train the model after 4 actions
+    train_frequency = 4
     update_after_actions = 4
     # How often to update the target network
     update_target_network = 10000
+
+    # Use the Baseline Atari environment because of Deepmind helper functions
+    env = make_env(env_id, 42)
+
+    input_shape = env.observation_space.shape
+    num_actions = env.action_space.n
+
+    if args.mode == 'cpu':
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+    if args.duel is True:
+        q_func = create_duel_q_model
+    else:
+        q_func = create_q_model
+
+    agent = DEEQAgent(q_func, input_shape, num_actions, gamma)
 
     # Experience replay buffers
     replay_memory = ReplayMemory(max_memory_length)
     episode_rewards = [0.0]
     episode_count = 0
-    state = np.array(env.reset())
+
+    state = env.reset()
+    state = np.expand_dims(np.array(state), axis=0)
 
     start_time = time.time()
 
@@ -92,15 +92,13 @@ def learn(env_id, num_steps, render, args):
         # Use epsilon-greedy for exploration
         if t < epsilon_random_frames or epsilon > np.random.rand(1)[0]:
             # Take random action
-            action = np.random.choice(num_actions)
+            action = np.int64(np.random.choice(num_actions))
         else:
             # Predict action Q-values
             # From environment state
-            state_tensor = tf.convert_to_tensor(state)
-            state_tensor = tf.expand_dims(state_tensor, 0)
-            action_probs = model(state_tensor, training=False)
+            action, _, _, _ = agent.step(tf.constant(state))
             # Take best action
-            action = tf.argmax(action_probs[0]).numpy()
+            action = action[0].numpy()
 
         # Decay probability of taking random action
         epsilon -= epsilon_interval / epsilon_greedy_frames
@@ -108,54 +106,32 @@ def learn(env_id, num_steps, render, args):
 
         # Apply the sampled action in our environment
         state_next, reward, done, _ = env.step(action)
-        state_next = np.array(state_next)
+        state_next = np.expand_dims(np.array(state_next), axis=0) 
 
         # Save actions and states in replay buffer
-        replay_memory.append(state, action, reward, state_next, done)
+        replay_memory.append(state[0], action, reward, state_next[0], float(done))
         state = state_next
 
         episode_rewards[-1] += reward
         
         if done:
             state = env.reset()
+            state = np.expand_dims(np.array(state), axis=0)
             episode_rewards.append(0.0)
             episode_count += 1
 
         # Update every fourth frame and once batch size is over 32
-        if t % update_after_actions == 0 and t > batch_size:
+        if t > epsilon_random_frames and t % train_frequency:
+            states, actions, rewards, next_states, dones = replay_memory.sample(batch_size)
+            states, next_states = tf.constant(states), tf.constant(next_states)
+            actions, rewards, dones = tf.constant(actions), tf.constant(rewards), tf.constant(dones)
 
-            state_sample, action_sample, rewards_sample, state_next_sample, done_sample = replay_memory.sample(batch_size)
+            agent.train(states, actions, rewards, next_states, dones)
 
-            # Build the updated Q-values for the sampled future states
-            # Use the target model for stability
-            future_rewards = model_target.predict(state_next_sample)
-            # Q value = reward + discount factor * expected future reward
-            updated_q_values = rewards_sample + gamma * tf.reduce_max(
-                future_rewards, axis=1
-            )
 
-            # If final frame set the last value to -1
-            updated_q_values = updated_q_values * (1 - done_sample) - done_sample
-
-            # Create a mask so we only calculate loss on the updated Q-values
-            masks = tf.one_hot(action_sample, num_actions)
-
-            with tf.GradientTape() as tape:
-                # Train the model on the states and updated Q-values
-                q_values = model(state_sample)
-
-                # Apply the masks to the Q-values to get the Q-value for action taken
-                q_action = tf.reduce_sum(tf.multiply(q_values, masks), axis=1)
-                # Calculate loss between new Q-value and old Q-value
-                loss = loss_function(updated_q_values, q_action)
-
-            # Backpropagation
-            grads = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(grads, model.trainable_variables))
-
-        if t % update_target_network == 0:
+        if t > epsilon_random_frames and t % update_target_network == 0:
             # update the the target network with new weights
-            model_target.set_weights(model.get_weights())
+            agent.update_target()
 
         if done and episode_count % 100 == 0:
             mean_100ep_reward = round(np.mean(episode_rewards[-101:-1]), 2)
@@ -174,9 +150,9 @@ def learn(env_id, num_steps, render, args):
     path_to = './data'
     os.makedirs(path_to, exist_ok=True)
     path_to_file = path_to + '/' + env_id + '-' + time.strftime('%Y-%m-%d', time.localtime(time.time())) + '-dqn' + '-' + args.mode + '.h5'
-    model.save(filepath=path_to_file)
+    agent.save_model(path_to_file)
 
-    return
+    return    
 
 def play(env_id, model_file, episodes):
     import math
@@ -194,16 +170,15 @@ def play(env_id, model_file, episodes):
 
     for _ in range(episodes):
         is_done = False
-        state = np.array(env.reset())
+        state = env.reset()
+        state = np.expand_dims(np.array(state), axis=0)
         
         while not is_done:
             env.render('human')
 
             # Predict action Q-values
             # From environment state
-            state_tensor = tf.convert_to_tensor(state)
-            state_tensor = tf.expand_dims(state_tensor, 0)
-            action_probs = model(state_tensor, training=False)
+            action_probs = model(tf.constant(state), training=False)
             # Take best action
             action = tf.argmax(action_probs[0]).numpy()
             
