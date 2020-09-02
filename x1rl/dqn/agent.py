@@ -2,11 +2,11 @@ import tensorflow as tf
 from tensorflow.python.keras.backend import dtype
 
 class DEEQAgent(tf.Module):
-    def __init__(self, q_func, observation_shape, num_actions, gamma):
+    def __init__(self, q_func, observation_shape, num_actions, lr, gamma):
         self.num_actions = num_actions
         self.gamma = gamma
         
-        self.optimizer = tf.keras.optimizers.Adam(learning_rate=0.00025, clipnorm=1.0)
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr, clipnorm=1.0)
         self.losses = tf.keras.losses.Huber()
         with tf.name_scope('q_network'):
             self.q_network = q_func(observation_shape, num_actions)
@@ -47,7 +47,10 @@ class DEEQAgent(tf.Module):
 
     @tf.function(autograph=False)
     def update_target(self):
-        self.target_q_network.set_weights(self.q_network.get_weights())
+        q_vars = self.q_network.trainable_variables
+        target_q_vars = self.target_q_network.trainable_variables
+        for var, var_target in zip(q_vars, target_q_vars):
+            var_target.assign(var)
 
     def save_model(self, path_to_file):
         self.q_network.save(filepath=path_to_file)

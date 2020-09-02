@@ -46,8 +46,6 @@ def learn(env_id, num_steps, render, args):
         epsilon_max - epsilon_min
     )  # Rate at which to reduce chance of random action being taken
     batch_size = 32  # Size of batch taken from replay buffer
-    # Number of frames to take random action and observe output
-    epsilon_random_frames = 50000
     # Number of frames for exploration
     epsilon_greedy_frames = num_steps * 0.1
     # Maximum replay length
@@ -57,7 +55,9 @@ def learn(env_id, num_steps, render, args):
     train_frequency = 4
     update_after_actions = 4
     # How often to update the target network
-    update_target_network = 10000
+    update_target_network = 1000
+    # When agent starts learning
+    learning_starts = 10000
 
     # Use the Baseline Atari environment because of Deepmind helper functions
     env = make_env(env_id, 42)
@@ -73,7 +73,7 @@ def learn(env_id, num_steps, render, args):
     else:
         q_func = create_q_model
 
-    agent = DEEQAgent(q_func, input_shape, num_actions, gamma)
+    agent = DEEQAgent(q_func, input_shape, num_actions, 1e-4, gamma)
 
     # Experience replay buffers
     replay_memory = ReplayMemory(max_memory_length)
@@ -90,7 +90,7 @@ def learn(env_id, num_steps, render, args):
             env.render('human')
 
         # Use epsilon-greedy for exploration
-        if t < epsilon_random_frames or epsilon > np.random.rand(1)[0]:
+        if epsilon > np.random.rand(1)[0]:
             # Take random action
             action = np.int64(np.random.choice(num_actions))
         else:
@@ -121,7 +121,7 @@ def learn(env_id, num_steps, render, args):
             episode_count += 1
 
         # Update every fourth frame and once batch size is over 32
-        if t > epsilon_random_frames and t % train_frequency:
+        if t > learning_starts and t % train_frequency == 0:
             states, actions, rewards, next_states, dones = replay_memory.sample(batch_size)
             states, next_states = tf.constant(states), tf.constant(next_states)
             actions, rewards, dones = tf.constant(actions), tf.constant(rewards), tf.constant(dones)
@@ -129,7 +129,7 @@ def learn(env_id, num_steps, render, args):
             agent.train(states, actions, rewards, next_states, dones)
 
 
-        if t > epsilon_random_frames and t % update_target_network == 0:
+        if t > learning_starts and t % update_target_network == 0:
             # update the the target network with new weights
             agent.update_target()
 
@@ -163,7 +163,7 @@ def play(env_id, model_file, episodes):
     path_to_file = path_to + '/' + model_file
 
     if os.path.isfile(path_to_file):
-        model = keras.models.load_model(path_to_file)
+        q_func = keras.models.load_model(path_to_file)
     else:
         logger.error('filename:{} doesn\'t exist'.format(path_to_file))
         return
@@ -178,11 +178,12 @@ def play(env_id, model_file, episodes):
 
             # Predict action Q-values
             # From environment state
-            action_probs = model(tf.constant(state), training=False)
+            action_probs = q_func(tf.constant(state), training=False)
             # Take best action
             action = tf.argmax(action_probs[0]).numpy()
             
             state, _, is_done, _  = env.step(action)
+            state = np.expand_dims(np.array(state), axis=0)
 
     env.close()
     return
